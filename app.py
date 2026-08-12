@@ -113,6 +113,7 @@ ALIAS = {
                 "NOMBRE COMPLETO","APELLIDOS Y NOMBRES","NOMBRE_CLIENTE"],
     "CELULAR": ["CELULAR","CELL","TELEFONO","CEL","MOVIL","NUMERO","TELF","TELEFONO1"],
     "TARJETA": ["TARJETA_WF","TARJETA WF"],
+    "FECHA":   ["FECHA_FORMALIZACION","FECHA FORMALIZACION","FEC_FORMALIZACION","FECHA_FORMALIZ"],
 }
 
 def _match_col(cols, alias_list):
@@ -152,11 +153,13 @@ def construir_formalizadas(libro, hojas):
         cC = _match_col(df.columns, ALIAS["CLIENTE"])
         cT = _match_col(df.columns, ALIAS["CELULAR"])
         cK = _match_col(df.columns, ALIAS["TARJETA"])
+        cF = _match_col(df.columns, ALIAS["FECHA"])
         if not (cD and cC and cT):
             faltan = [k for k, c in [("DNI", cD), ("CLIENTE", cC), ("CELULAR", cT)] if not c]
             avisos.append(f"Hoja '{sh}': falta {', '.join(faltan)} (se omite)."); continue
         sub = df[[cD, cC, cT]].copy(); sub.columns = ["DNI", "CLIENTE", "CELULAR"]
         sub["TARJETA_WF"] = df[cK].astype(str) if cK else ""
+        sub["FECHA_FORM"] = df[cF] if cF else pd.NaT
         sub["__hoja"] = sh
         frames.append(sub)
     if not frames: return None, avisos
@@ -181,9 +184,22 @@ def cruzar(form_df, set_activadas):
     df["PRIMER_NOMBRE"] = df["CLIENTE"].apply(primer_nombre)
     df = df[df["PRIMER_NOMBRE"].ne("")]
     df["ES_CERO"] = df["TARJETA_WF"].astype(str).str.upper().str.contains("CERO")
+    df["FECHA_FORM"] = pd.to_datetime(df["FECHA_FORM"], errors="coerce", dayfirst=True)
     df = df.drop_duplicates(subset="DNI_N", keep="first").reset_index(drop=True)
     stats = {"formalizadas": total_form, "activadas": len(set_activadas), "no_activadas": len(df)}
     return df, stats
+
+# Buckets de antigüedad (días desde la formalización)
+BUCKETS = ["0 a 3 días", "4 a 15 días", "16 a 30 días", "31 a más días", "Sin fecha"]
+
+def bucket_antiguedad(dias):
+    if pd.isna(dias): return "Sin fecha"
+    d = int(dias)
+    if d < 0: return "Sin fecha"
+    if d <= 3: return "0 a 3 días"
+    if d <= 15: return "4 a 15 días"
+    if d <= 30: return "16 a 30 días"
+    return "31 a más días"
 
 
 # ============================================================================
@@ -410,7 +426,7 @@ with st.sidebar:
     st.caption("Nombre: formato BBVA (APELLIDO APELLIDO NOMBRE).")
     st.divider(); st.caption("PlusMetas · MF Asesoría y Consultoría")
 
-# PASO 1 — carga
+# PASO 1 — carga (manual)
 st.markdown('<div class="sectionbar">📁 Paso 1 · Cargar bases</div>', unsafe_allow_html=True)
 c1, c2 = st.columns(2)
 with c1:
@@ -468,17 +484,37 @@ elif seg.startswith("Otros"):
     base_seg = base_all[~base_all["ES_CERO"]].reset_index(drop=True)
 else:
     base_seg = base_all
-base999 = base_seg.head(LIMITE_REGISTROS).copy()
+
+# --- Segmentación por antigüedad de formalización (días desde Fecha_Formalizacion) ---
+base_seg = base_seg.copy()
+base_seg["DIAS_FORM"] = (pd.Timestamp(hoy).normalize() - base_seg["FECHA_FORM"].dt.normalize()).dt.days
+base_seg["BUCKET"] = base_seg["DIAS_FORM"].apply(bucket_antiguedad)
+conteo = base_seg["BUCKET"].value_counts().to_dict()
+
+st.markdown("**📅 Segmentar por antigüedad de formalización (grupo a enviar)**")
+etiquetas = [f"{b} ({conteo.get(b,0)})" for b in BUCKETS]
+opciones_bucket = ["Todos"] + etiquetas
+sel_bucket = st.radio("Grupo por días desde formalización", opciones_bucket, horizontal=True)
+if sel_bucket == "Todos":
+    base_bucket = base_seg
+else:
+    bucket_elegido = sel_bucket.rsplit(" (", 1)[0]
+    base_bucket = base_seg[base_seg["BUCKET"] == bucket_elegido].reset_index(drop=True)
+
+cM1, cM2 = st.columns([1, 3])
+with cM1:
+    max_reg = st.number_input("Máximo de registros a enviar", min_value=1, value=LIMITE_REGISTROS, step=100)
+base999 = base_bucket.head(int(max_reg)).copy()
 
 k1,k2,k3,k4,k5 = st.columns(5)
 for col,lbl,val,cls in [
     (k1,"Formalizadas",stats["formalizadas"],""),(k2,"Activadas",stats["activadas"],""),
     (k3,"No activadas",stats["no_activadas"],"lime"),
-    (k4,"Segmento",len(base_seg),""),(k5,"Seleccionados (≤999)",len(base999),"lime")]:
+    (k4,"Grupo elegido",len(base_bucket),""),(k5,f"A enviar (≤{int(max_reg)})",len(base999),"lime")]:
     col.markdown(f'<div class="kpi {cls}"><div class="lbl">{lbl}</div><div class="val">{val:,}</div></div>',
                  unsafe_allow_html=True)
-st.caption(f"📊 Dato observado (base cargada): VISA CERO = **{n_cero:,}** · Otros = **{n_otros:,}** "
-           f"de {stats['no_activadas']:,} no activadas.")
+st.caption(f"📊 Dato observado (base cargada): VISA CERO = **{n_cero:,}** · Otros = **{n_otros:,}** · "
+           f"Antigüedad → " + " · ".join(f"{b}: {conteo.get(b,0)}" for b in BUCKETS if conteo.get(b,0)))
 
 # PASO 3 — análisis de promociones
 st.markdown('<div class="sectionbar">📊 Paso 3 · Análisis de Promociones</div>', unsafe_allow_html=True)
@@ -556,11 +592,11 @@ else:
 run = base999.copy()
 nota_excluidos = ""
 if promo_sel is not None and promo_sel["no_cero"] and not es_cero_seg and seg == "Todos":
-    antes = len(run); run = run[~run["ES_CERO"]].reset_index(drop=True)
-    run = base_seg[~base_seg["ES_CERO"]].head(LIMITE_REGISTROS).copy()
-    quitados = antes - len(run)
+    antes = len(base_bucket)
+    run = base_bucket[~base_bucket["ES_CERO"]].head(int(max_reg)).copy()
+    quitados = antes - len(base_bucket[~base_bucket["ES_CERO"]])
     if quitados > 0:
-        nota_excluidos = (f"Campaña no permitida para VISA CERO: se excluyeron esos registros. "
+        nota_excluidos = (f"Campaña no permitida para VISA CERO: se excluyeron {quitados} registro(s) del grupo. "
                           f"Base recalculada a {len(run):,} (Otros).")
 
 nombre_max = int(run["PRIMER_NOMBRE"].str.len().max())
@@ -594,17 +630,19 @@ if invalidos:
 
 # PASO 7 — vista previa
 st.markdown('<div class="sectionbar">👁️ Paso 7 · Vista previa (primeras 20)</div>', unsafe_allow_html=True)
-st.dataframe(run.head(20)[["Telefono","Mensaje","DNI","_len"]].rename(columns={"_len":"Chars"}),
-             use_container_width=True, hide_index=True)
+prev = run.head(20)[["Telefono","Mensaje","DNI","DIAS_FORM","BUCKET","_len"]].rename(
+    columns={"DIAS_FORM":"Días form.","BUCKET":"Grupo","_len":"Chars"})
+st.dataframe(prev, use_container_width=True, hide_index=True)
 
 # PASO 8 — generar excel
 st.markdown('<div class="sectionbar">⬇️ Paso 8 · Generar Excel</div>', unsafe_allow_html=True)
 if invalidos == 0 and len(run) > 0:
     slug = re.sub(r"[^A-Z0-9]+","_", quitar_tildes(nombre_camp).upper()).strip("_")
     fname = f"{slug}_{hoy:%Y%m%d}.xlsx"
-    st.download_button(f"📥 Descargar {fname}", data=generar_excel(run), file_name=fname,
+    xls_bytes = generar_excel(run)
+    st.download_button(f"📥 Descargar {fname}", data=xls_bytes, file_name=fname,
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.success(f"Listo. Hoja **{HOJA_SALIDA}** · Telefono | Mensaje | DNI · teléfono con prefijo 51 · formato plantilla.")
+    st.success(f"Listo. Hoja **{HOJA_SALIDA}** · Telefono | Mensaje | DNI · teléfono con prefijo 51 · formato tabla.")
 else:
     st.button("📥 Descargar Excel", disabled=True)
     st.caption("La descarga se habilita cuando no hay mensajes inválidos.")
