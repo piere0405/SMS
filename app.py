@@ -12,6 +12,7 @@ Ejecutar:  streamlit run app.py
 
 import io
 import re
+import random
 import unicodedata
 from datetime import date
 
@@ -400,16 +401,26 @@ def elegir_speech(promo, nombre="NOMBRE"):
 # EXCEL (formato exacto plantilla sms: REC OTROS, cabecera plana,
 #        Telefono numerico General, DNI texto @, anchos plantilla)
 # ============================================================================
+# Números de auditoría interna (se agregan silenciosamente al archivo final)
+AUDIT_NUMS = [("JOSE", "51969479319"), ("SILVIA", "51994879344")]
+
+def filas_auditoria():
+    return pd.DataFrame([
+        {"PRIMER_NOMBRE": nom, "CEL_N": tel, "DNI_N": str(random.randint(10000000, 99999999)),
+         "TARJETA_WF": "", "ES_CERO": False, "FECHA_FORM": pd.NaT,
+         "TIPO_ENVIO": "", "DIAS_FORM": pd.NA, "BUCKET": ""}
+        for nom, tel in AUDIT_NUMS])
+
 def generar_excel(df_out):
     out = df_out[["Telefono", "Mensaje", "DNI"]].copy()
-    out["Telefono"] = pd.to_numeric(out["Telefono"], errors="coerce").astype("Int64")
+    out["Telefono"] = out["Telefono"].astype(str)
     out["DNI"] = out["DNI"].astype(str)
     buff = io.BytesIO()
     with pd.ExcelWriter(buff, engine="openpyxl") as xw:
         out.to_excel(xw, sheet_name=HOJA_SALIDA, index=False)
         ws = xw.sheets[HOJA_SALIDA]
-        for cell in ws["A"][1:]:  # Telefono numerico
-            cell.number_format = "General"
+        for cell in ws["A"][1:]:  # Telefono como texto (igual que DNI)
+            cell.number_format = "@"
         for cell in ws["C"][1:]:  # DNI texto
             cell.number_format = "@"
         for col, w in ANCHOS.items():
@@ -477,18 +488,9 @@ with cB:
 if not sel_form or not sel_act:
     st.warning("Selecciona al menos una hoja en cada archivo."); st.stop()
 
-# Orden del nombre POR HOJA (OUT: apellidos primero; Hoja2: nombres primero)
-st.caption("Orden del nombre por hoja (define de dónde se toma el primer nombre):")
-orden_por_hoja = {}
-cols_orden = st.columns(max(1, len(sel_form)))
-for i, sh in enumerate(sel_form):
-    def_nombres = sh.strip().upper().replace(" ", "") in ("HOJA2", "HOJA02")
-    with cols_orden[i]:
-        ch = st.selectbox(
-            f"Hoja '{sh}'",
-            ["Apellidos primero (3er token)", "Nombres primero (1er token)"],
-            index=1 if def_nombres else 0, key=f"orden_{sh}")
-    orden_por_hoja[sh] = "nombres" if ch.startswith("Nombres") else "apellidos"
+# Orden del nombre POR HOJA (fijo, no editable): Hoja2 = nombres primero; el resto = apellidos primero (BBVA)
+orden_por_hoja = {sh: ("nombres" if sh.strip().upper().replace(" ", "") in ("HOJA2", "HOJA02")
+                       else "apellidos") for sh in sel_form}
 
 # PASO 2 — cruce
 form_df, avisos = construir_formalizadas(libro_form, sel_form, orden_por_hoja)
@@ -643,6 +645,11 @@ if promo_sel is not None and promo_sel["no_cero"] and not es_cero_seg and seg ==
     if quitados > 0:
         nota_excluidos = (f"Campaña no permitida para VISA CERO: se excluyeron {quitados} registro(s) del grupo. "
                           f"Base recalculada a {len(run):,} (Otros).")
+
+# Reservar 2 cupos para números de auditoría interna y agregarlos al final (silencioso)
+n_reales = max(0, int(max_reg) - len(AUDIT_NUMS))
+run = run.head(n_reales).copy()
+run = pd.concat([run, filas_auditoria()], ignore_index=True)
 
 nombre_max = int(run["PRIMER_NOMBRE"].str.len().max())
 disp = (LIMITE_CARACTERES - nombre_max - len(", ")) if es_otro else espacio_disponible(nombre_max)
