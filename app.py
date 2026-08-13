@@ -114,6 +114,7 @@ ALIAS = {
     "CELULAR": ["CELULAR","CELL","TELEFONO","CEL","MOVIL","NUMERO","TELF","TELEFONO1"],
     "TARJETA": ["TARJETA_WF","TARJETA WF"],
     "FECHA":   ["FECHA_FORMALIZACION","FECHA FORMALIZACION","FEC_FORMALIZACION","FECHA_FORMALIZ"],
+    "ENVIO":   ["TIPO_ENVIO","TIPO ENVIO","TIPO_DE_ENVIO"],
 }
 
 def _match_col(cols, alias_list):
@@ -154,12 +155,14 @@ def construir_formalizadas(libro, hojas):
         cT = _match_col(df.columns, ALIAS["CELULAR"])
         cK = _match_col(df.columns, ALIAS["TARJETA"])
         cF = _match_col(df.columns, ALIAS["FECHA"])
+        cE = _match_col(df.columns, ALIAS["ENVIO"])
         if not (cD and cC and cT):
             faltan = [k for k, c in [("DNI", cD), ("CLIENTE", cC), ("CELULAR", cT)] if not c]
             avisos.append(f"Hoja '{sh}': falta {', '.join(faltan)} (se omite)."); continue
         sub = df[[cD, cC, cT]].copy(); sub.columns = ["DNI", "CLIENTE", "CELULAR"]
         sub["TARJETA_WF"] = df[cK].astype(str) if cK else ""
         sub["FECHA_FORM"] = df[cF] if cF else pd.NaT
+        sub["TIPO_ENVIO"] = df[cE].astype(str).str.strip() if cE else ""
         sub["__hoja"] = sh
         frames.append(sub)
     if not frames: return None, avisos
@@ -365,9 +368,16 @@ def construir_mensaje(nombre, cuerpo):
     txt = f"{nombre}, {cuerpo}. {CIERRE_OBLIGATORIO}"
     return quitar_tildes(re.sub(r"\s+", " ", txt).strip())
 
-def validar_mensaje(msg):
+def construir_mensaje_libre(nombre, cuerpo):
+    """OTRO: solo antepone el nombre; el resto (incluido el cierre) lo escribe el usuario."""
+    txt = f"{nombre}, {cuerpo.strip()}"
+    return quitar_tildes(re.sub(r"\s+", " ", txt).strip())
+
+def validar_mensaje(msg, requiere_cierre=True):
     n = len(msg)
-    ok = n <= LIMITE_CARACTERES and msg.strip().endswith(quitar_tildes(CIERRE_OBLIGATORIO)) and "," in msg
+    ok = n <= LIMITE_CARACTERES and "," in msg
+    if requiere_cierre:
+        ok = ok and msg.strip().endswith(quitar_tildes(CIERRE_OBLIGATORIO))
     return {"ok": ok, "n": n, "exceso": max(0, n - LIMITE_CARACTERES)}
 
 def espacio_disponible(nombre_mas_largo):
@@ -485,6 +495,19 @@ elif seg.startswith("Otros"):
 else:
     base_seg = base_all
 
+# --- Filtro por Tipo_Envio (Oficina / Courier) ---
+base_seg = base_seg.copy()
+tipos = [t for t in base_seg["TIPO_ENVIO"].dropna().unique().tolist() if str(t).strip() not in ("", "nan")]
+if tipos:
+    conteo_env = base_seg["TIPO_ENVIO"].value_counts().to_dict()
+    opciones_env = ["Todos"] + [f"{t} ({conteo_env.get(t,0)})" for t in tipos]
+    sel_env = st.radio("Tipo de envío", opciones_env, horizontal=True)
+    if sel_env != "Todos":
+        tipo_elegido = sel_env.rsplit(" (", 1)[0]
+        base_seg = base_seg[base_seg["TIPO_ENVIO"] == tipo_elegido].reset_index(drop=True)
+else:
+    sel_env = "Todos"
+
 # --- Segmentación por antigüedad de formalización (días desde Fecha_Formalizacion) ---
 base_seg = base_seg.copy()
 base_seg["DIAS_FORM"] = (pd.Timestamp(hoy).normalize() - base_seg["FECHA_FORM"].dt.normalize()).dt.days
@@ -580,9 +603,13 @@ opciones["OTRO (mensaje personalizado)"] = None
 sel_key = st.selectbox("Campaña", list(opciones.keys()), index=0)
 promo_sel = opciones[sel_key]
 
-if promo_sel is None:
-    cuerpo_txt = st.text_area("Escribe tu mensaje (se añade primer nombre, coma, cierre y se quitan tildes):",
-                              value="aprovecha los beneficios de tu tarjeta BBVA", height=80)
+es_otro = promo_sel is None
+if es_otro:
+    cuerpo_txt = st.text_area(
+        "Escribe TODO el mensaje (solo se antepone el nombre automáticamente; incluye tú el cierre "
+        "si lo necesitas). Se quitan tildes y se valida el máximo de 160 caracteres:",
+        value="activa hoy por la app BBVA o cajero mas cercano", height=90)
+    st.caption("Vista: NOMBRE, " + (cuerpo_txt or ""))
 else:
     cuerpos = promo_sel["speeches"]
     idx = st.radio("Speech base", list(range(len(cuerpos))), format_func=lambda i: cuerpos[i], index=0)
@@ -600,7 +627,7 @@ if promo_sel is not None and promo_sel["no_cero"] and not es_cero_seg and seg ==
                           f"Base recalculada a {len(run):,} (Otros).")
 
 nombre_max = int(run["PRIMER_NOMBRE"].str.len().max())
-disp = espacio_disponible(nombre_max)
+disp = (LIMITE_CARACTERES - nombre_max - len(", ")) if es_otro else espacio_disponible(nombre_max)
 b1,b2,b3 = st.columns(3)
 b1.markdown(f'<div class="kpi"><div class="lbl">Límite</div><div class="val">160</div></div>', unsafe_allow_html=True)
 b2.markdown(f'<div class="kpi"><div class="lbl">Nombre más largo</div><div class="val">{nombre_max}</div></div>', unsafe_allow_html=True)
@@ -609,8 +636,11 @@ if nota_excluidos: st.warning("⚠️ " + nota_excluidos)
 
 # PASO 6 — generar + validar
 run["Telefono"] = run["CEL_N"]; run["DNI"] = run["DNI_N"]
-run["Mensaje"] = run["PRIMER_NOMBRE"].apply(lambda n: construir_mensaje(n, cuerpo_txt))
-val = run["Mensaje"].apply(validar_mensaje)
+if es_otro:
+    run["Mensaje"] = run["PRIMER_NOMBRE"].apply(lambda n: construir_mensaje_libre(n, cuerpo_txt))
+else:
+    run["Mensaje"] = run["PRIMER_NOMBRE"].apply(lambda n: construir_mensaje(n, cuerpo_txt))
+val = run["Mensaje"].apply(lambda m: validar_mensaje(m, requiere_cierre=not es_otro))
 run["_ok"] = val.apply(lambda v: v["ok"]); run["_len"] = val.apply(lambda v: v["n"])
 invalidos = int((~run["_ok"]).sum()); validos = int(run["_ok"].sum())
 
@@ -622,7 +652,7 @@ r1.markdown(f'<div class="kpi"><div class="lbl">Registros</div><div class="val">
 r2.markdown(f'<div class="kpi lime"><div class="lbl">Mensajes válidos</div><div class="val">{validos:,}</div></div>', unsafe_allow_html=True)
 r3.markdown(f'<div class="kpi"><div class="lbl">Inválidos (>160)</div><div class="val">{invalidos:,}</div></div>', unsafe_allow_html=True)
 r4.markdown(f'<div class="kpi"><div class="lbl">Long. máx.</div><div class="val">{int(run["_len"].max())}</div></div>', unsafe_allow_html=True)
-st.caption(f"Segmento: **{seg}** · Campaña: **{nombre_camp}** · {estado_camp}")
+st.caption(f"Segmento: **{seg}** · Envío: **{sel_env}** · Campaña: **{nombre_camp}** · {estado_camp}")
 if invalidos:
     ej = run[~run["_ok"]].iloc[0]
     st.error(f"🔴 {invalidos} mensaje(s) superan 160 caracteres. Acorta el speech.")
@@ -630,8 +660,8 @@ if invalidos:
 
 # PASO 7 — vista previa
 st.markdown('<div class="sectionbar">👁️ Paso 7 · Vista previa (primeras 20)</div>', unsafe_allow_html=True)
-prev = run.head(20)[["Telefono","Mensaje","DNI","DIAS_FORM","BUCKET","_len"]].rename(
-    columns={"DIAS_FORM":"Días form.","BUCKET":"Grupo","_len":"Chars"})
+prev = run.head(20)[["Telefono","Mensaje","DNI","TIPO_ENVIO","DIAS_FORM","BUCKET","_len"]].rename(
+    columns={"TIPO_ENVIO":"Envío","DIAS_FORM":"Días form.","BUCKET":"Grupo","_len":"Chars"})
 st.dataframe(prev, use_container_width=True, hide_index=True)
 
 # PASO 8 — generar excel

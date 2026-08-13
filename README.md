@@ -11,10 +11,14 @@ tarjeta y por antigüedad de formalización, genera el Excel `REC OTROS` (format
 1. Subir FORMALIZADAS (BBVA-TLM: hojas OUT+Hoja2) y ACTIVADAS (hoja DTA JULIO).
 2. Cruce por DNI -> excluye activados -> valida -> dedup (conserva orden).
 3. **Segmento de tarjeta** (Tarjeta_WF): Todos / VISA CERO / Otros.
-4. **Segmento por antigüedad** (Fecha_Formalizacion vs hoy): 0-3 / 4-15 / 16-30 / 31+ días.
+4. **Tipo de envío** (Tipo_Envio): Todos / Oficina / Courier.
+5. **Segmento por antigüedad** (Fecha_Formalizacion vs hoy): 0-3 / 4-15 / 16-30 / 31+ días.
    Se elige el grupo a enviar y un máximo de registros (default 999).
-5. Análisis de promociones + alertas + recomendación por promoción.
-6. Selección de campaña -> speech <=160 sin tildes -> vista previa -> Excel.
+6. Análisis de promociones + alertas + recomendación por promoción.
+7. Selección de campaña -> speech <=160 sin tildes -> vista previa -> Excel.
+
+## OTRO (mensaje libre)
+En la opción OTRO se escribe TODO el mensaje libremente; solo se antepone el nombre automáticamente (sin forzar el cierre). Se quitan tildes y se valida <=160.
 
 ## Reglas
 - Teléfono de salida con prefijo 51 (numérico). DNI como texto. Hoja REC OTROS con formato tabla.
