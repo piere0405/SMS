@@ -89,11 +89,14 @@ def normaliza_celular(valor, prefijo="51") -> str:
 
 PARTICULAS = {"DE","DEL","LA","LAS","LOS","SAN","SANTA","MC","MAC","VON","DA","DI"}
 
-def primer_nombre(nombre_completo: str) -> str:
-    """Base BBVA: APELLIDO APELLIDO NOMBRE... -> primer nombre = token tras 2 apellidos."""
+def primer_nombre(nombre_completo: str, orden: str = "apellidos") -> str:
+    """orden='apellidos' (APELLIDO APELLIDO NOMBRE...) -> nombre = token tras 2 apellidos.
+       orden='nombres'   (NOMBRE ... APELLIDOS)        -> nombre = primer token."""
     if not nombre_completo or pd.isna(nombre_completo): return ""
     toks = [t for t in re.split(r"\s+", str(nombre_completo).strip()) if t]
     if not toks: return ""
+    if orden == "nombres":
+        return toks[0].upper()
     i, apellidos = 0, 0
     while i < len(toks) and apellidos < 2:
         if toks[i].upper() in PARTICULAS and i + 1 < len(toks):
@@ -146,7 +149,8 @@ def hojas_con_dni(libro):
 # ============================================================================
 # CRUCE
 # ============================================================================
-def construir_formalizadas(libro, hojas):
+def construir_formalizadas(libro, hojas, orden_por_hoja=None):
+    orden_por_hoja = orden_por_hoja or {}
     frames, avisos = [], []
     for sh in hojas:
         df = libro[sh]
@@ -163,6 +167,8 @@ def construir_formalizadas(libro, hojas):
         sub["TARJETA_WF"] = df[cK].astype(str) if cK else ""
         sub["FECHA_FORM"] = df[cF] if cF else pd.NaT
         sub["TIPO_ENVIO"] = df[cE].astype(str).str.strip() if cE else ""
+        orden = orden_por_hoja.get(sh, "apellidos")
+        sub["PRIMER_NOMBRE"] = sub["CLIENTE"].apply(lambda x: primer_nombre(x, orden))
         sub["__hoja"] = sh
         frames.append(sub)
     if not frames: return None, avisos
@@ -184,8 +190,7 @@ def cruzar(form_df, set_activadas):
     df = df[df["DNI_N"].ne("")]
     df["CEL_N"] = df["CELULAR"].apply(normaliza_celular)
     df = df[df["CEL_N"].ne("")]
-    df["PRIMER_NOMBRE"] = df["CLIENTE"].apply(primer_nombre)
-    df = df[df["PRIMER_NOMBRE"].ne("")]
+    df = df[df["PRIMER_NOMBRE"].fillna("").ne("")]
     df["ES_CERO"] = df["TARJETA_WF"].astype(str).str.upper().str.contains("CERO")
     df["FECHA_FORM"] = pd.to_datetime(df["FECHA_FORM"], errors="coerce", dayfirst=True)
     df = df.drop_duplicates(subset="DNI_N", keep="first").reset_index(drop=True)
@@ -472,8 +477,21 @@ with cB:
 if not sel_form or not sel_act:
     st.warning("Selecciona al menos una hoja en cada archivo."); st.stop()
 
+# Orden del nombre POR HOJA (OUT: apellidos primero; Hoja2: nombres primero)
+st.caption("Orden del nombre por hoja (define de dónde se toma el primer nombre):")
+orden_por_hoja = {}
+cols_orden = st.columns(max(1, len(sel_form)))
+for i, sh in enumerate(sel_form):
+    def_nombres = sh.strip().upper().replace(" ", "") in ("HOJA2", "HOJA02")
+    with cols_orden[i]:
+        ch = st.selectbox(
+            f"Hoja '{sh}'",
+            ["Apellidos primero (3er token)", "Nombres primero (1er token)"],
+            index=1 if def_nombres else 0, key=f"orden_{sh}")
+    orden_por_hoja[sh] = "nombres" if ch.startswith("Nombres") else "apellidos"
+
 # PASO 2 — cruce
-form_df, avisos = construir_formalizadas(libro_form, sel_form)
+form_df, avisos = construir_formalizadas(libro_form, sel_form, orden_por_hoja)
 for a in avisos: st.warning("⚠️ " + a)
 if form_df is None: st.stop()
 set_act = dni_activadas(libro_act, sel_act)
