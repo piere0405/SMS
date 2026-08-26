@@ -25,3 +25,12 @@ En la opción OTRO se escribe TODO el mensaje libremente; solo se antepone el no
 - Nombre: formato BBVA APELLIDO APELLIDO NOMBRE (toma el primer nombre real).
 - VISA CERO NO recibe: Puntos y Grandes Premios, Bono Semanal, Educación, x5 Exterior, Deporte.
   Sí recibe: Día del Niño, Exoneración de Membresía, Conciertos.
+
+## Actualizaciones recientes
+- DNI siempre a 8 dígitos (texto, con ceros a la izquierda).
+- La palabra "activa" siempre se muestra como "Activa".
+- Módulo 1 Formalizadas: hasta 3 archivos combinados en una sola base.
+- Módulo 3 Histórico de Activadas (opcional): hoja ACTIVADAS, DOI, FLAG_ACTIVA=1.
+- Cruce excluye DNI activados en Activadas del mes Y/O Histórico (unión, dedup).
+- Módulos independientes: funciona con Formalizadas sola, +mes, +histórico o los tres.
+- Sección "Recomendaciones" ahora es un desplegable cerrado por defecto.

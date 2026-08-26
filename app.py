@@ -25,7 +25,7 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 # ============================================================================
 NAVY = "#145078"; LIME = "#AFCB07"
 LIMITE_CARACTERES = 160
-CIERRE_OBLIGATORIO = "activa hoy por la app BBVA o cajero mas cercano"
+CIERRE_OBLIGATORIO = "Activa hoy por la app BBVA o cajero mas cercano"
 HOJA_SALIDA = "REC OTROS"
 LIMITE_REGISTROS = 999
 DEFAULT_HOJA_ACTIVADAS = "DTA JULIO"
@@ -78,8 +78,10 @@ def quitar_tildes(texto: str) -> str:
     return texto.replace("\uE000", "ñ").replace("\uE001", "Ñ")
 
 def normaliza_dni(serie: pd.Series) -> pd.Series:
-    return (serie.astype(str).str.strip()
-            .str.replace(r"\.0$", "", regex=True).str.replace(r"\D", "", regex=True))
+    s = (serie.astype(str).str.strip()
+         .str.replace(r"\.0$", "", regex=True).str.replace(r"\D", "", regex=True))
+    # DNI siempre 8 dígitos: si tiene menos, completar con ceros a la izquierda (texto)
+    return s.apply(lambda d: d.zfill(8) if 0 < len(d) < 8 else d)
 
 def normaliza_celular(valor, prefijo="51") -> str:
     d = re.sub(r"\D", "", str(valor))
@@ -181,6 +183,37 @@ def dni_activadas(libro, hojas):
         df = libro[sh]; cD = _match_col(df.columns, ALIAS["DNI"])
         if cD: s |= set(normaliza_dni(df[cD]).replace("", pd.NA).dropna())
     return s
+
+def dni_historico(libro):
+    """Histórico: hoja ACTIVADAS, DNI en 'DOI', activado si FLAG_ACTIVA == 1.
+       Devuelve (set_dni, error_msg)."""
+    sh = next((s for s in libro if str(s).strip().upper() == "ACTIVADAS"), None)
+    if not sh:
+        return set(), "no se encontró la hoja 'ACTIVADAS'"
+    df = libro[sh]
+    cD = _match_col(df.columns, ["DOI"])
+    cF = _match_col(df.columns, ["FLAG_ACTIVA", "FLAG ACTIVA"])
+    faltan = [n for n, c in [("DOI", cD), ("FLAG_ACTIVA", cF)] if not c]
+    if faltan:
+        return set(), f"falta la columna: {', '.join(faltan)}"
+    flag = pd.to_numeric(df[cF], errors="coerce") == 1
+    s = set(normaliza_dni(df.loc[flag, cD]).replace("", pd.NA).dropna())
+    return s, None
+
+def combinar_formalizadas(libros):
+    """Combina TODAS las hojas válidas de varios libros de formalizadas en una sola base."""
+    frames, avisos = [], []
+    for libro in libros:
+        hojas = hojas_validas_formalizadas(libro)
+        orden = {sh: ("nombres" if str(sh).strip().upper().replace(" ", "") in ("HOJA2", "HOJA02")
+                      else "apellidos") for sh in hojas}
+        f, av = construir_formalizadas(libro, hojas, orden)
+        if f is not None:
+            frames.append(f)
+        avisos += av
+    if not frames:
+        return None, avisos
+    return pd.concat(frames, ignore_index=True), avisos
 
 def cruzar(form_df, set_activadas):
     """Excluye activados, valida, dedup por DNI (conserva orden). Devuelve TODA la base no activada."""
@@ -369,15 +402,19 @@ def analizar(hoy):
 # ============================================================================
 # MENSAJES
 # ============================================================================
+def _cap_activa(txt):
+    # La palabra 'activa' siempre con A mayúscula (no afecta 'activaciones', etc.)
+    return re.sub(r"\bactiva\b", "Activa", txt, flags=re.IGNORECASE)
+
 def construir_mensaje(nombre, cuerpo):
     cuerpo = cuerpo.strip().rstrip(".")
     txt = f"{nombre}, {cuerpo}. {CIERRE_OBLIGATORIO}"
-    return quitar_tildes(re.sub(r"\s+", " ", txt).strip())
+    return _cap_activa(quitar_tildes(re.sub(r"\s+", " ", txt).strip()))
 
 def construir_mensaje_libre(nombre, cuerpo):
     """OTRO: solo antepone el nombre; el resto (incluido el cierre) lo escribe el usuario."""
     txt = f"{nombre}, {cuerpo.strip()}"
-    return quitar_tildes(re.sub(r"\s+", " ", txt).strip())
+    return _cap_activa(quitar_tildes(re.sub(r"\s+", " ", txt).strip()))
 
 def validar_mensaje(msg, requiere_cierre=True):
     n = len(msg)
@@ -452,56 +489,78 @@ with st.sidebar:
     st.caption("Nombre: formato BBVA (APELLIDO APELLIDO NOMBRE).")
     st.divider(); st.caption("PlusMetas · MF Asesoría y Consultoría")
 
-# PASO 1 — carga (manual)
+# PASO 1 — carga (3 módulos independientes)
 st.markdown('<div class="sectionbar">📁 Paso 1 · Cargar bases</div>', unsafe_allow_html=True)
-c1, c2 = st.columns(2)
-with c1:
-    up_form = st.file_uploader("📗 FORMALIZADAS (Excel)", type=["xlsx","xls"], key="form")
-    st.caption("Ej.: BBVA-TLM · se combinan las hojas OUT + Hoja2.")
+
+st.markdown("**📗 Módulo 1 · FORMALIZADAS** (hasta 3 archivos: mes actual, mes anterior, dos meses atrás)")
+up_forms = st.file_uploader("Formalizadas (Excel)", type=["xlsx","xls"], key="form",
+                            accept_multiple_files=True)
+if up_forms and len(up_forms) > 3:
+    st.warning("⚠️ Máximo 3 archivos de formalizadas; se usarán los primeros 3.")
+    up_forms = up_forms[:3]
+
+c2, c3 = st.columns(2)
 with c2:
-    up_act = st.file_uploader("📕 ACTIVADAS (Excel)", type=["xlsx","xls"], key="act")
-    st.caption("Ej.: ACTIVACIONES · se usa la hoja DTA JULIO.")
+    st.markdown("**📕 Módulo 2 · ACTIVADAS DEL MES** (opcional)")
+    up_act = st.file_uploader("Activadas del mes (Excel)", type=["xlsx","xls"], key="act")
+with c3:
+    st.markdown("**📘 Módulo 3 · HISTÓRICO DE ACTIVADAS** (opcional)")
+    up_hist = st.file_uploader("Histórico (hoja ACTIVADAS · DOI · FLAG_ACTIVA)", type=["xlsx","xls"], key="hist")
 
-if not (up_form and up_act):
-    st.info("Sube ambos archivos para iniciar el cruce."); st.stop()
+if not up_forms:
+    st.info("Sube al menos un archivo de FORMALIZADAS para iniciar."); st.stop()
 
+# --- Leer formalizadas (1 a 3 archivos) ---
 try:
-    libro_form = leer_libro(up_form.getvalue()); libro_act = leer_libro(up_act.getvalue())
+    libros_form = [leer_libro(f.getvalue()) for f in up_forms]
 except Exception:
-    st.error("⚠️ No se pudo leer alguno de los archivos. Verifica que sean Excel válidos (.xlsx)."); st.stop()
+    st.error("⚠️ No se pudo leer algún archivo de FORMALIZADAS. Verifica que sean Excel válidos."); st.stop()
 
-val_form = hojas_validas_formalizadas(libro_form)
-if not val_form:
-    st.error("⚠️ En FORMALIZADAS no hay hoja con DNI + CLIENTE + CELULAR.")
-    st.write("Hojas detectadas:", list(libro_form.keys())); st.stop()
-hojas_dni_act = hojas_con_dni(libro_act)
-if not hojas_dni_act:
-    st.error("⚠️ En ACTIVADAS no hay hoja con columna DNI.")
-    st.write("Hojas detectadas:", list(libro_act.keys())); st.stop()
+form_df, avisos = combinar_formalizadas(libros_form)
+for a in avisos: st.warning("⚠️ " + a)
+if form_df is None:
+    st.error("⚠️ En FORMALIZADAS no hay ninguna hoja con DNI + CLIENTE + CELULAR."); st.stop()
 
-cA, cB = st.columns(2)
-with cA:
-    sel_form = st.multiselect("Hojas de FORMALIZADAS a combinar", val_form, default=val_form)
-with cB:
+# --- Activadas del mes (opcional) ---
+set_act = set(); n_act_mes = 0
+if up_act:
+    try:
+        libro_act = leer_libro(up_act.getvalue())
+    except Exception:
+        st.error("⚠️ No se pudo leer el archivo de ACTIVADAS del mes."); st.stop()
+    hojas_dni_act = hojas_con_dni(libro_act)
+    if not hojas_dni_act:
+        st.error("⚠️ ACTIVADAS del mes: no hay hoja con columna DNI.")
+        st.write("Hojas detectadas:", list(libro_act.keys())); st.stop()
     default_act = [DEFAULT_HOJA_ACTIVADAS] if DEFAULT_HOJA_ACTIVADAS in hojas_dni_act else hojas_dni_act
-    sel_act = st.multiselect("Hojas de ACTIVADAS (cruce por DNI)", hojas_dni_act, default=default_act)
-if not sel_form or not sel_act:
-    st.warning("Selecciona al menos una hoja en cada archivo."); st.stop()
+    sel_act = st.multiselect("Hojas de ACTIVADAS del mes (cruce por DNI)", hojas_dni_act, default=default_act)
+    if sel_act:
+        set_act = dni_activadas(libro_act, sel_act); n_act_mes = len(set_act)
 
-# Orden del nombre POR HOJA (fijo, no editable): Hoja2 = nombres primero; el resto = apellidos primero (BBVA)
-orden_por_hoja = {sh: ("nombres" if sh.strip().upper().replace(" ", "") in ("HOJA2", "HOJA02")
-                       else "apellidos") for sh in sel_form}
+# --- Histórico de activadas (opcional) ---
+set_hist = set(); n_hist = 0
+if up_hist:
+    try:
+        libro_hist = leer_libro(up_hist.getvalue())
+    except Exception:
+        st.error("⚠️ No se pudo leer el archivo de HISTÓRICO."); st.stop()
+    set_hist, err = dni_historico(libro_hist)
+    if err:
+        st.error(f"⚠️ Histórico de activadas: {err}. Se espera hoja 'ACTIVADAS' con columnas DOI y FLAG_ACTIVA.")
+        st.write("Hojas detectadas:", list(libro_hist.keys())); st.stop()
+    n_hist = len(set_hist)
+
+# --- Unificar exclusiones y cruzar ---
+set_excluir = set_act | set_hist
 
 # PASO 2 — cruce
-form_df, avisos = construir_formalizadas(libro_form, sel_form, orden_por_hoja)
-for a in avisos: st.warning("⚠️ " + a)
-if form_df is None: st.stop()
-set_act = dni_activadas(libro_act, sel_act)
-base_all, stats = cruzar(form_df, set_act)
+base_all, stats = cruzar(form_df, set_excluir)
 if base_all.empty:
     st.error("⚠️ Tras el cruce no quedaron registros válidos."); st.stop()
 
 st.markdown('<div class="sectionbar">🔀 Paso 2 · Cruce Formalizadas − Activadas</div>', unsafe_allow_html=True)
+st.caption(f"Exclusiones por DNI → Activadas del mes: **{n_act_mes:,}** · Histórico (FLAG_ACTIVA=1): "
+           f"**{n_hist:,}** · Únicos combinados: **{len(set_excluir):,}**")
 
 # Segmento de tarjeta (VISA CERO no recibe Pagos Sin Intereses)
 n_cero = int(base_all["ES_CERO"].sum()); n_otros = len(base_all) - n_cero
@@ -593,21 +652,21 @@ for p in promos:
 if not hay_alerta:
     st.caption("Sin vencimientos próximos para la fecha seleccionada.")
 
-st.markdown("**🧭 Cuándo conviene usar cada promoción**")
-st.caption("💡 Hipótesis / 🎯 Recomendación (buenas prácticas). No hay data histórica de consumo cargada; "
-           "validar con histórico antes de tomarlo como dato.")
-for p in promos:
-    e = p["_est"]; icon = {"red":"🔴","orange":"🟠","green":"🟢","yellow":"🟡","blue":"🔵"}[e["pill"]]
-    _, ejemplo = elegir_speech(p)
-    cls = "promo psi" if p["no_cero"] else "promo"
-    psi_tag = ' · <b style="color:#b96a00">No VISA CERO</b>' if p["no_cero"] else ""
-    st.markdown(f"""
-    <div class="{cls}">
-      <h4>{icon} {p['nombre']} <span class="small">· {e['estado']} · score {p['_score']}/100{psi_tag}</span></h4>
-      <div class="small">{p['beneficio']} — {e['detalle']}</div>
-      <div style="margin:6px 0">{p['cuando_usar']}</div>
-      <code>{ejemplo}</code>
-    </div>""", unsafe_allow_html=True)
+with st.expander("Recomendaciones", expanded=False):
+    st.caption("💡 Hipótesis / 🎯 Recomendación (buenas prácticas). No hay data histórica de consumo cargada; "
+               "validar con histórico antes de tomarlo como dato.")
+    for p in promos:
+        e = p["_est"]; icon = {"red":"🔴","orange":"🟠","green":"🟢","yellow":"🟡","blue":"🔵"}[e["pill"]]
+        _, ejemplo = elegir_speech(p)
+        cls = "promo psi" if p["no_cero"] else "promo"
+        psi_tag = ' · <b style="color:#b96a00">No VISA CERO</b>' if p["no_cero"] else ""
+        st.markdown(f"""
+        <div class="{cls}">
+          <h4>{icon} {p['nombre']} <span class="small">· {e['estado']} · score {p['_score']}/100{psi_tag}</span></h4>
+          <div class="small">{p['beneficio']} — {e['detalle']}</div>
+          <div style="margin:6px 0">{p['cuando_usar']}</div>
+          <code>{ejemplo}</code>
+        </div>""", unsafe_allow_html=True)
 
 # PASO 5 — selección de campaña y speech
 st.markdown('<div class="sectionbar">✍️ Paso 5 · Seleccionar campaña y generar speech</div>', unsafe_allow_html=True)
@@ -660,7 +719,7 @@ b3.markdown(f'<div class="kpi lime"><div class="lbl">Espacio p/ cuerpo</div><div
 if nota_excluidos: st.warning("⚠️ " + nota_excluidos)
 
 # PASO 6 — generar + validar
-run["Telefono"] = run["CEL_N"]; run["DNI"] = run["DNI_N"]
+run["Telefono"] = run["CEL_N"]; run["DNI"] = run["DNI_N"].apply(lambda d: str(d).zfill(8) if str(d) else d)
 if es_otro:
     run["Mensaje"] = run["PRIMER_NOMBRE"].apply(lambda n: construir_mensaje_libre(n, cuerpo_txt))
 else:
