@@ -439,7 +439,7 @@ def elegir_speech(promo, nombre="NOMBRE"):
 #        Telefono numerico General, DNI texto @, anchos plantilla)
 # ============================================================================
 # Números de auditoría interna (se agregan silenciosamente al archivo final)
-AUDIT_NUMS = [("JOSE", "51969479319"), ("SILVIA", "51994879344")]
+AUDIT_NUMS = [("JOSE", "51969479319"), ("SILVIA", "51994879344"),("RENATO", "51945133679")]
 
 def filas_auditoria():
     return pd.DataFrame([
