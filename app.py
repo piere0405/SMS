@@ -232,13 +232,16 @@ def cruzar(form_df, set_activadas):
     return df, stats
 
 # Buckets de antigüedad (días desde la formalización)
-BUCKETS = ["0 a 3 días", "4 a 15 días", "16 a 30 días", "31 a más días", "Sin fecha"]
+BUCKETS = ["0","1","2","3", "4 a 15 días", "16 a 30 días", "31 a más días", "Sin fecha"]
 
 def bucket_antiguedad(dias):
     if pd.isna(dias): return "Sin fecha"
     d = int(dias)
     if d < 0: return "Sin fecha"
-    if d <= 3: return "0 a 3 días"
+    if d == 0: return "0 días"
+    if d == 1: return "1 días"
+    if d == 2: return "2 días"
+    if d == 3: return "3 días"
     if d <= 15: return "4 a 15 días"
     if d <= 30: return "16 a 30 días"
     return "31 a más días"
@@ -596,12 +599,23 @@ conteo = base_seg["BUCKET"].value_counts().to_dict()
 st.markdown("**📅 Segmentar por antigüedad de formalización (grupo a enviar)**")
 etiquetas = [f"{b} ({conteo.get(b,0)})" for b in BUCKETS]
 opciones_bucket = ["Todos"] + etiquetas
-sel_bucket = st.radio("Grupo por días desde formalización", opciones_bucket, horizontal=True)
-if sel_bucket == "Todos":
-    base_bucket = base_seg
+sel_bucket = st.multiselect(
+    "Grupo por días desde formalización",
+    opciones_bucket,
+    default=["Todos"]
+)
+
+if "Todos" in sel_bucket:
+    base_bucket = base_seg.copy()
 else:
-    bucket_elegido = sel_bucket.rsplit(" (", 1)[0]
-    base_bucket = base_seg[base_seg["BUCKET"] == bucket_elegido].reset_index(drop=True)
+    buckets_elegidos = [
+        b.rsplit(" (", 1)[0]
+        for b in sel_bucket
+    ]
+
+    base_bucket = base_seg[
+        base_seg["BUCKET"].isin(buckets_elegidos)
+    ].reset_index(drop=True)
 
 cM1, cM2 = st.columns([1, 3])
 with cM1:
