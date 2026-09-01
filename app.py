@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 GENERADOR INTELIGENTE DE CAMPAÑAS DE ACTIVACIÓN — BBVA / PlusMetas
 ==================================================================
@@ -232,14 +231,23 @@ def cruzar(form_df, set_activadas):
     return df, stats
 
 # Buckets de antigüedad (días desde la formalización)
-BUCKETS = ["0","1","2","3", "4 a 15 días", "16 a 30 días", "31 a más días", "Sin fecha"]
+BUCKETS = [
+    "0 días",
+    "1 día",
+    "2 días",
+    "3 días",
+    "4 a 15 días",
+    "16 a 30 días",
+    "31 a más días",
+    "Sin fecha"
+]
 
 def bucket_antiguedad(dias):
     if pd.isna(dias): return "Sin fecha"
     d = int(dias)
     if d < 0: return "Sin fecha"
     if d == 0: return "0 días"
-    if d == 1: return "1 días"
+    if d == 1: return "1 día"
     if d == 2: return "2 días"
     if d == 3: return "3 días"
     if d <= 15: return "4 a 15 días"
