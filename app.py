@@ -199,6 +199,22 @@ def dni_historico(libro):
     s = set(normaliza_dni(df.loc[flag, cD]).replace("", pd.NA).dropna())
     return s, None
 
+def dni_excepciones(libros):
+    """Excepciones: archivos con formato de descarga (Telefono/Mensaje/DNI) cuyos DNI ya
+       recibieron mensaje. Toma la columna DNI de cualquier hoja que la tenga. Multi-archivo.
+       Devuelve (set_dni, avisos)."""
+    s, avisos = set(), []
+    for libro in libros:
+        hojas = hojas_con_dni(libro)
+        if not hojas:
+            avisos.append("Un archivo de excepciones no tiene columna DNI (se omite).")
+            continue
+        for sh in hojas:
+            df = libro[sh]; cD = _match_col(df.columns, ALIAS["DNI"])
+            if cD:
+                s |= set(normaliza_dni(df[cD]).replace("", pd.NA).dropna())
+    return s, avisos
+
 def combinar_formalizadas(libros):
     """Combina TODAS las hojas válidas de varios libros de formalizadas en una sola base."""
     frames, avisos = [], []
@@ -518,6 +534,11 @@ with c3:
     st.markdown("**📘 Módulo 3 · HISTÓRICO DE ACTIVADAS** (opcional)")
     up_hist = st.file_uploader("Histórico (hoja ACTIVADAS · DOI · FLAG_ACTIVA)", type=["xlsx","xls"], key="hist")
 
+st.markdown("**📙 Módulo 4 · EXCEPCIONES — ya enviados** (opcional, varios archivos)")
+up_exc = st.file_uploader("Excepciones (formato de descarga: Telefono · Mensaje · DNI)",
+                          type=["xlsx","xls"], key="exc", accept_multiple_files=True)
+st.caption("DNIs que ya recibieron mensaje; se excluyen igual que las activadas para no repetir el envío.")
+
 if not up_forms:
     st.info("Sube al menos un archivo de FORMALIZADAS para iniciar."); st.stop()
 
@@ -561,8 +582,19 @@ if up_hist:
         st.write("Hojas detectadas:", list(libro_hist.keys())); st.stop()
     n_hist = len(set_hist)
 
+# --- Excepciones (opcional, varios archivos) ---
+set_exc = set(); n_exc = 0
+if up_exc:
+    try:
+        libros_exc = [leer_libro(f.getvalue()) for f in up_exc]
+    except Exception:
+        st.error("⚠️ No se pudo leer algún archivo de EXCEPCIONES."); st.stop()
+    set_exc, avisos_exc = dni_excepciones(libros_exc)
+    for a in avisos_exc: st.warning("⚠️ " + a)
+    n_exc = len(set_exc)
+
 # --- Unificar exclusiones y cruzar ---
-set_excluir = set_act | set_hist
+set_excluir = set_act | set_hist | set_exc
 
 # PASO 2 — cruce
 base_all, stats = cruzar(form_df, set_excluir)
@@ -571,7 +603,7 @@ if base_all.empty:
 
 st.markdown('<div class="sectionbar">🔀 Paso 2 · Cruce Formalizadas − Activadas</div>', unsafe_allow_html=True)
 st.caption(f"Exclusiones por DNI → Activadas del mes: **{n_act_mes:,}** · Histórico (FLAG_ACTIVA=1): "
-           f"**{n_hist:,}** · Únicos combinados: **{len(set_excluir):,}**")
+           f"**{n_hist:,}** · Excepciones: **{n_exc:,}** · Únicos combinados: **{len(set_excluir):,}**")
 
 # Segmento de tarjeta (VISA CERO no recibe Pagos Sin Intereses)
 n_cero = int(base_all["ES_CERO"].sum()); n_otros = len(base_all) - n_cero

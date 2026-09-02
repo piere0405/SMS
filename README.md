@@ -34,3 +34,9 @@ En la opción OTRO se escribe TODO el mensaje libremente; solo se antepone el no
 - Cruce excluye DNI activados en Activadas del mes Y/O Histórico (unión, dedup).
 - Módulos independientes: funciona con Formalizadas sola, +mes, +histórico o los tres.
 - Sección "Recomendaciones" ahora es un desplegable cerrado por defecto.
+
+## Módulo 4 · Excepciones (ya enviados)
+Sube uno o varios Excel con el formato de descarga (Telefono · Mensaje · DNI).
+Sus DNIs se excluyen igual que las activadas para no repetir el envío.
+Es opcional (no siempre se sube) y admite varios archivos.
+Neto = Formalizadas − (Activadas del mes ∪ Histórico ∪ Excepciones).
